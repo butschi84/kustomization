@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: weaviate-config
+  namespace: weaviate
+data:
+  # property-like keys; each key maps to a simple value
+  player_initial_lives: "3"
+  ui_properties_file_name: "user-interface.properties"
+
+  # file-like keys
+  conf.yaml: |-
+    authentication:
+      anonymous_access:
+        enabled: true
+      oidc:
+        enabled: false
+    authorization:
+      admin_list:
+        enabled: false
+
+    query_defaults:
+      limit: 100
+    debug: false

@@ -1,0 +1,178 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: weaviate
+  namespace: weaviate
+  labels:
+    app: weaviate
+    app.kubernetes.io/name: weaviate
+    name: weaviate
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: weaviate
+  template:
+    metadata:
+      labels:
+        app: weaviate
+        app.kubernetes.io/name: weaviate
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - weaviate
+                topologyKey: kubernetes.io/hostname
+        # you might wanna put the weaviate pod on a special k8s node with enough storage
+        # the 2 transformer container images are each around 4-5 GB in size
+        # nodeAffinity:
+        #   requiredDuringSchedulingIgnoredDuringExecution:
+        #     nodeSelectorTerms:
+        #       - matchExpressions:
+        #           - key: kubernetes.io/hostname
+        #             operator: In
+        #             values:
+        #               - bnetnode02
+      volumes:
+        - name: weaviate-config
+          configMap:
+            name: weaviate-config
+            defaultMode: 420
+      containers:
+        - name: qna-transformers
+          image: >-
+            semitechnologies/qna-transformers:bert-large-uncased-whole-word-masking-finetuned-squad
+          environment:
+            - name: ENABLE_CUDA
+              value: "0"
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: "all"
+            - name: EXTENSIONS_STORAGE_MODE
+              value: weaviate
+            - name: EXTENSIONS_STORAGE_ORIGIN
+              value: http://127.0.0.1:8081
+          command:
+            - uvicorn
+            - app:app
+            - "--host"
+            - 0.0.0.0
+            - "--port"
+            - "8086"
+            - "--scheme"
+            - http
+          ports:
+            - containerPort: 8086
+              protocol: TCP
+        - name: t2v-transformers
+          image: >-
+            semitechnologies/transformers-inference:sentence-transformers-multi-qa-MiniLM-L6-cos-v1
+          ports:
+            - containerPort: 8087
+              protocol: TCP
+          command:
+            - uvicorn
+            - app:app
+            - "--host"
+            - 0.0.0.0
+            - "--port"
+            - "8087"
+            - "--scheme"
+            - http
+          env:
+            - name: OCCURRENCE_WEIGHT_LINEAR_FACTOR
+              value: "0.75"
+            - name: EXTENSIONS_STORAGE_MODE
+              value: weaviate
+            - name: EXTENSIONS_STORAGE_ORIGIN
+              value: http://127.0.0.1:8081
+        - name: weaviate
+          image: semitechnologies/weaviate:1.22.3
+          command:
+            - /bin/weaviate
+          args:
+            - "--host"
+            - 0.0.0.0
+            - "--port"
+            - "8081"
+            - "--scheme"
+            - http
+          ports:
+            - containerPort: 8081
+              protocol: TCP
+            - containerPort: 7000
+              protocol: TCP
+          env:
+            - name: CLUSTER_DATA_BIND_PORT
+              value: "7001"
+            - name: TRANSFORMERS_INFERENCE_API
+              value: http://127.0.0.1:8087
+            - name: QNA_INFERENCE_API
+              value: http://127.0.0.1:8086
+            - name: CLUSTER_GOSSIP_BIND_PORT
+              value: "7000"
+            - name: GOGC
+              value: "100"
+            - name: PROMETHEUS_MONITORING_ENABLED
+              value: "false"
+            - name: QUERY_MAXIMUM_RESULTS
+              value: "100000"
+            - name: REINDEX_VECTOR_DIMENSIONS_AT_STARTUP
+              value: "false"
+            - name: TRACK_VECTOR_DIMENSIONS
+              value: "false"
+            - name: STANDALONE_MODE
+              value: "true"
+            - name: PERSISTENCE_DATA_PATH
+              value: /var/lib/weaviate
+            - name: DEFAULT_VECTORIZER_MODULE
+              value: text2vec-transformers
+            - name: ENABLE_MODULES
+              value: text2vec-transformers,qna-transformers
+            - name: CLUSTER_JOIN
+              value: weaviate-headless.weaviate.svc.cluster.local
+            - name: AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED
+              value: "true"
+          volumeMounts:
+            - name: weaviate-config
+              mountPath: /weaviate-config
+            - name: weaviate-data
+              mountPath: /var/lib/weaviate
+          livenessProbe:
+            httpGet:
+              path: /v1/.well-known/live
+              port: 8081
+              scheme: HTTP
+            initialDelaySeconds: 900
+            timeoutSeconds: 3
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /v1/.well-known/ready
+              port: 8081
+              scheme: HTTP
+      restartPolicy: Always
+  volumeClaimTemplates:
+    - kind: PersistentVolumeClaim
+      apiVersion: v1
+      metadata:
+        name: weaviate-data
+        labels:
+          app.kubernetes.io/name: weaviate
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 32Gi
+        storageClassName: "nfs-storage"
+        volumeMode: Filesystem
+  serviceName: weaviate-headless
